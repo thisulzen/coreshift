@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="CoreShift.Generator/CoreShift.Generator.csproj" />
+  <Project Path="CoreShift.Migrator/CoreShift.Migrator.csproj" />
+  <Project Path="CoreShift.Tests/CoreShift.Tests.csproj" />
+</Solution>

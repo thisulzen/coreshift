@@ -1,0 +1,26 @@
+# Azure DevOps: unit tests, then a full migration rehearsal against SQL Server in Docker.
+# Any unexplained reconciliation break fails the build.
+trigger:
+  branches:
+    include: [main]
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+  - task: UseDotNet@2
+    inputs:
+      packageType: sdk
+      version: 10.x
+
+  - script: dotnet test CoreShift.slnx --logger trx
+    displayName: Unit tests
+
+  - task: PublishTestResults@2
+    condition: always()
+    inputs:
+      testResultsFormat: VSTest
+      testResultsFiles: '**/*.trx'
+
+  - script: ci/rehearsal.sh
+    displayName: Migration rehearsal
