@@ -1,22 +1,29 @@
 using System.Globalization;
+using System.Reflection;
+using System.Text.Json;
 
 namespace CoreShift.Generator;
 
 // One CSV per table, the way the old core's nightly extract writes them:
-// UPPER_SNAKE headers, Y/N flags, blanks for nulls.
-public static class Csv
+// UPPER_SNAKE headers, Y/N flags, blanks for nulls. Rows are appended as they're generated.
+public sealed class CsvFile<T> : IDisposable
 {
-    public static void Write<T>(string path, IEnumerable<T> rows)
+    static readonly PropertyInfo[] Props = typeof(T).GetProperties();
+    readonly StreamWriter writer;
+
+    public CsvFile(string path)
     {
-        var props = typeof(T).GetProperties();
-        using var w = new StreamWriter(path);
-        w.WriteLine(string.Join(",", props.Select(p => Header(p.Name))));
-        foreach (var row in rows)
-            w.WriteLine(string.Join(",", props.Select(p => Field(p.GetValue(row)))));
+        writer = new StreamWriter(path);
+        writer.WriteLine(string.Join(",", Props.Select(p => JsonNamingPolicy.SnakeCaseUpper.ConvertName(p.Name))));
     }
 
-    static string Header(string name) =>
-        string.Concat(name.Select((c, i) => i > 0 && char.IsUpper(c) ? "_" + c : c.ToString())).ToUpperInvariant();
+    public void WriteAll(IEnumerable<T> rows)
+    {
+        foreach (var row in rows)
+            writer.WriteLine(string.Join(",", Props.Select(p => Field(p.GetValue(row)))));
+    }
+
+    public void Dispose() => writer.Dispose();
 
     static string Field(object? value) => value switch
     {

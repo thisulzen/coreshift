@@ -13,7 +13,7 @@ public class LegacyBankGenerator
 
     record Branch(string Code, string State, string Bsb);
     record Address(string Line, string Suburb, string State, string Postcode);
-    record Bill(string Code, string Channel, string Description, decimal Amount, int Day, int EveryMonths, int MonthOffset, bool OnCard);
+    record Bill(string Code, string Description, decimal Amount, int Day, int EveryMonths, int MonthOffset, bool OnCard);
 
     class Person
     {
@@ -117,6 +117,7 @@ public class LegacyBankGenerator
     int nextCustId = 1_000_000, nextTxnId;
     long nextAcctNo = 100_000_000;
 
+    // The current household's rows, ready for Generate's flush
     public List<LegacyCustomer> Customers { get; } = [];
     public List<LegacyAccount> Accounts { get; } = [];
     public List<LegacyAccountHolder> Holders { get; } = [];
@@ -152,10 +153,20 @@ public class LegacyBankGenerator
         agents = Pool(8, "REAL ESTATE");
     }
 
-    public void Generate(int customerCount)
+    // One household at a time: `flush` writes out the household's rows, then they're dropped,
+    // so memory stays flat however big the bank gets
+    public void Generate(int customerCount, Action flush)
     {
-        while (Customers.Count < customerCount)
+        for (var made = 0; made < customerCount;)
+        {
             GenerateHousehold();
+            made += Customers.Count;
+            flush();
+            Customers.Clear();
+            Accounts.Clear();
+            Holders.Clear();
+            Transactions.Clear();
+        }
     }
 
     void GenerateHousehold()
@@ -454,7 +465,7 @@ public class LegacyBankGenerator
         else
         {
             // Half-monthly payments made fortnightly add up to 13 monthly payments a year
-            var perMonth = (fortnightly ? monthly * 13 / 12 : monthly) + loan.Extra;
+            var perMonth = (fortnightly ? Math.Round(monthly * 13 / 12, 2) : monthly) + loan.Extra;
             var (owed, paidOffAfter) = interestOnly ? (amount, null) : RollForward(amount, rate, perMonth, MonthsBetween(opened, historyStart));
             if (paidOffAfter is int months)
             {
@@ -577,14 +588,15 @@ public class LegacyBankGenerator
         if (opened.Year >= 2018 && f.Random.Bool(0.4f)) branch = digital;   // opened online
         var oldCore = opened < CoreConversion;
         nextAcctNo += f.Random.Int(1, 9);
+        // The old core's account title field holds 30 characters, so long joint names get cut off
+        var accountName = string.Join(" & ", owners.Select(p => $"{p.First} {p.Last}")).ToUpperInvariant();
         var row = new LegacyAccount
         {
             AcctNo = nextAcctNo.ToString(),
             Bsb = f.Random.Bool(0.1f) ? branch.Bsb.Replace("-", "") : branch.Bsb,
             ProductCode = code,
             ProductName = name,
-            // The old core's account title field holds 30 characters, so long joint names get cut off
-            AccountName = Truncate(string.Join(" & ", owners.Select(p => $"{p.First} {p.Last}")).ToUpperInvariant(), 30),
+            AccountName = accountName[..Math.Min(30, accountName.Length)],
             Branch = branch.Code,
             OpenDate = Date(opened, oldCore),
             Status = "OPEN",
@@ -619,10 +631,10 @@ public class LegacyBankGenerator
         var netFortnight = h.People.Sum(p => p.PaidMonthly ? p.Pay * 12 / 26 : p.Pay);
         string Ref() => f.Random.Number(10_000_000, 99_999_999).ToString();
         void Monthly(string payee, decimal amount, bool cardOk = false) =>
-            h.Bills.Add(new Bill("DD", "DIRECT_DEBIT", $"DIRECT DEBIT {payee} {Ref()}", amount, f.Random.Int(1, 28), 1, 0,
+            h.Bills.Add(new Bill("DD", $"DIRECT DEBIT {payee} {Ref()}", amount, f.Random.Int(1, 28), 1, 0,
                 cardOk && h.Card != null && f.Random.Bool()));
         void Quarterly(string payee, decimal amount) =>
-            h.Bills.Add(new Bill("BPY", "BPAY", $"BPAY {payee} CRN {Ref()}", amount, f.Random.Int(1, 28), 3, f.Random.Int(0, 2), false));
+            h.Bills.Add(new Bill("BPY", $"BPAY {payee} CRN {Ref()}", amount, f.Random.Int(1, 28), 3, f.Random.Int(0, 2), false));
 
         foreach (var _ in h.People) Monthly(f.PickRandom(telcos), f.Random.Int(35, 90));
         if (f.Random.Bool(0.85f)) Monthly(f.PickRandom(broadband), f.Random.Int(65, 110));
@@ -715,7 +727,7 @@ public class LegacyBankGenerator
             var amount = b.Code == "BPY" ? Math.Round(b.Amount * (decimal)f.Random.Double(0.8, 1.2), 2) : b.Amount;
             var acct = b.OnCard && h.Card is { } c && IsOpen(c, d) && Available(c) >= amount ? c : h.Main!;
             if (Available(acct) + (acct == h.Main ? InformalOverdraft : 0) >= amount)
-                Post(acct, d, b.Code, b.Description, -amount, b.Channel, customer: true);
+                Post(acct, d, b.Code, b.Description, -amount, b.Code == "DD" ? "DIRECT_DEBIT" : "BPAY", customer: true);
         }
     }
 
@@ -815,14 +827,9 @@ public class LegacyBankGenerator
         if (Available(acct) < amount) return;   // declined at the terminal
         var desc = onCard ? $"{merchant} AU" : $"{(online ? "ONLINE" : "EFTPOS")} PURCHASE {merchant} AU";
         var channel = onCard ? "CARD" : online ? "ONLINE" : "EFTPOS";
-        if (pending)
-        {
-            Hold(acct, d, desc, amount, channel);
-            return;
-        }
         // Card purchases settle a day or two after the customer taps
-        var tapped = d.AddDays(-f.Random.Int(0, 2));
-        Post(acct, d, "POS", desc, -amount, channel, customer: true, txnDate: tapped < acct.Opened ? d : tapped);
+        var tapped = pending ? d : d.AddDays(-f.Random.Int(0, 2));
+        Post(acct, d, "POS", desc, -amount, channel, customer: true, txnDate: tapped < acct.Opened ? d : tapped, pending: pending);
     }
 
     // Customers top up an overdrawn main account from savings when they notice
@@ -943,7 +950,7 @@ public class LegacyBankGenerator
             row.Bankrupt = h.Quality < -2.2 && f.Random.Bool(0.3f);
             row.CreditScore = (int)Math.Clamp(Normal(830 + 130 * h.Quality, 40) - 140 * row.CreditDefaults.Value - (row.Bankrupt ? 300 : 0), 0, 1200);
             row.CreditScoreDate = Date(credit.Max(a => a.Opened), p.OldCore);
-            row.CreditEnquiries5y = credit.Count(a => a.Opened > extractDate.AddYears(-5)) + Poisson(1.0);
+            row.CreditEnquiries5y = credit.Count(a => a.Opened > extractDate.AddYears(-5)) + f.Random.Int(0, 3);
         }
     }
 
@@ -985,44 +992,30 @@ public class LegacyBankGenerator
         return next > extractDate ? next : next.AddMonths(1);
     }
 
-    void Post(Acct a, DateOnly d, string code, string desc, decimal amount, string channel, bool customer = false, DateOnly? txnDate = null)
+    // A pending card purchase is only authorised: it holds funds (the available balance) but doesn't
+    // move the balance until it posts
+    void Post(Acct a, DateOnly d, string code, string desc, decimal amount, string channel,
+        bool customer = false, DateOnly? txnDate = null, bool pending = false)
     {
-        a.Row.Balance += amount;
-        if (a.Kind == Kind.CreditCard && amount < 0) a.CycleSpend -= amount;
-        if (customer)
+        if (pending) a.Pending -= amount;
+        else
         {
-            a.LastActivity = d;
-            if (amount > 0) a.DepositsThisMonth += amount;
+            a.Row.Balance += amount;
+            if (a.Kind == Kind.CreditCard && amount < 0) a.CycleSpend -= amount;
+            if (customer && amount > 0) a.DepositsThisMonth += amount;
         }
+        if (customer) a.LastActivity = d;
         Transactions.Add(new LegacyTransaction
         {
             TxnId = $"T{++nextTxnId:0000000000}",
             AcctNo = a.Row.AcctNo,
             TxnDate = Date(txnDate ?? d),
-            PostDate = Date(d),
+            PostDate = pending ? null : Date(d),
             TxnCode = code,
             Description = desc,
             Amount = amount,
-            RunningBalance = a.Row.Balance,
-            Status = "POSTED",
-            Channel = channel,
-        });
-    }
-
-    // An authorised card purchase that hasn't posted: it reduces the available balance, not the balance
-    void Hold(Acct a, DateOnly d, string desc, decimal amount, string channel)
-    {
-        a.Pending += amount;
-        a.LastActivity = d;
-        Transactions.Add(new LegacyTransaction
-        {
-            TxnId = $"T{++nextTxnId:0000000000}",
-            AcctNo = a.Row.AcctNo,
-            TxnDate = Date(d),
-            TxnCode = "POS",
-            Description = desc,
-            Amount = -amount,
-            Status = "PENDING",
+            RunningBalance = pending ? null : a.Row.Balance,
+            Status = pending ? "PENDING" : "POSTED",
             Channel = channel,
         });
     }
@@ -1116,8 +1109,6 @@ public class LegacyBankGenerator
         return address.ToUpperInvariant();
     }
 
-    static string Truncate(string s, int length) => s.Length <= length ? s : s[..length];
-
     DateOnly Payday(int weekday)
     {
         var d = historyStart;
@@ -1137,14 +1128,6 @@ public class LegacyBankGenerator
         mean + sd * Math.Sqrt(-2 * Math.Log(1 - f.Random.Double())) * Math.Cos(2 * Math.PI * f.Random.Double());
 
     decimal LogNormal(double median, double spread) => (decimal)(median * Math.Exp(Normal(0, spread)));
-
-    int Poisson(double mean)
-    {
-        int k = 0;
-        double p = Math.Exp(-mean), sum = p, u = f.Random.Double();
-        while (u > sum) sum += p *= mean / ++k;
-        return k;
-    }
 
     DateOnly RandomDate(DateOnly from, DateOnly to) => from >= to ? from : from.AddDays(f.Random.Int(0, to.DayNumber - from.DayNumber));
 
