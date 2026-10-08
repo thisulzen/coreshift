@@ -120,6 +120,10 @@ CREATE TABLE ops.customer_map (
     match_reason    VARCHAR(200)  NULL
 );
 
+-- Which mapping version and fault the target currently holds, for labelling a standalone reconcile
+IF OBJECT_ID('ops.target_load') IS NULL
+CREATE TABLE ops.target_load (mapping_version VARCHAR(20) NOT NULL, fault VARCHAR(20) NULL);
+
 -- Cutover runs, their audit log and their cohorts
 IF OBJECT_ID('ops.cutover_runs') IS NULL
 CREATE TABLE ops.cutover_runs (

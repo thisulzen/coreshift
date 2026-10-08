@@ -16,6 +16,7 @@ class Migration(SqlConnection db, MappingConfig config, string? fault)
         // ponytail: DELETE because TRUNCATE refuses tables that foreign keys point at; drop and re-add the keys if this gets slow
         foreach (var table in new[] { "transactions", "account_holders", "accounts", "customers" })
             Db.Cmd(db, $"DELETE FROM target.{table}", tx).ExecuteNonQuery();
+        Db.Cmd(db, "DELETE FROM ops.target_load; INSERT INTO ops.target_load VALUES (@version, @fault)", tx, ("@version", config.Version), ("@fault", fault)).ExecuteNonQuery();
     }
 
     // Decides which legacy customers are the same person, and records it in ops.customer_map

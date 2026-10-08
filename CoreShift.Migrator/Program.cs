@@ -4,6 +4,7 @@ using Microsoft.Data.SqlClient;
 const string Usage = """
     Usage: coreshift <command> [options]
       migrate   [--fault F]   load the target bank from legacy; safe to run again
+      reconcile               compare legacy with target; exits 1 on any unexplained break
     Options:
       --fault F        inject a deliberate mapping bug: rounding, drop-pending, date-format, accrual
       --mapping PATH   use a different mapping file (default: mapping.v1.json next to the tool)
@@ -12,7 +13,7 @@ const string Usage = """
 string? Option(string name) { var i = Array.IndexOf(args, name); return i >= 0 && i + 1 < args.Length ? args[i + 1] : null; }
 var command = args.FirstOrDefault();
 var fault = Option("--fault");
-if (command is not "migrate" || (fault != null && !Migration.Faults.Contains(fault)))
+if (command is not ("migrate" or "reconcile") || (fault != null && !Migration.Faults.Contains(fault)))
 {
     Console.Error.WriteLine(Usage);
     return 2;
@@ -23,6 +24,14 @@ try
 {
     using var db = Db.Open();
     Db.RunScript(db, Db.Resource("target-schema.sql"));
+    if (command == "reconcile")
+    {
+        // Filed under the mapping version and fault the target was actually loaded with
+        using var r = Db.Cmd(db, "SELECT mapping_version, fault FROM ops.target_load").ExecuteReader();
+        var (version, loadedFault) = r.Read() ? (r.GetString(0), r.IsDBNull(1) ? null : r.GetString(1)) : (config.Version, null);
+        r.Close();
+        return Reconciler.Report(db, Reconciler.Run(db, version, loadedFault)) ? 0 : 1;
+    }
     var migration = new Migration(db, config, fault);
 
     Console.WriteLine($"Migrating with mapping v{config.Version}{(fault != null ? $", fault: {fault}" : "")}");

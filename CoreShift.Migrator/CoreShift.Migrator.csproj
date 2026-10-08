@@ -15,6 +15,7 @@
   <ItemGroup>
     <!-- SQL ships inside the tool so it runs the same from any folder -->
     <EmbeddedResource Include="..\db\05-target-schema.sql" LogicalName="target-schema.sql" />
+    <EmbeddedResource Include="..\db\06-reconcile.sql" LogicalName="reconcile.sql" />
     <!-- The mapping rules stay a plain file next to the tool, editable without touching code -->
     <None Include="..\mapping\mapping.v1.json" Link="mapping.v1.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
