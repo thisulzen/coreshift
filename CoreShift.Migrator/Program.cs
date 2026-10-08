@@ -8,6 +8,7 @@ const string Usage = """
       rehearse  [--fault F]   a full cutover as a dry run: always ends in rollback
       cutover   [--fault F]   the real thing: commit on go, roll back on no-go
       resume                  carry on a rehearsal or cutover that stopped part-way
+      dashboard [--port P]    rehearsal history in the browser (default port 5080)
     Options:
       --fault F            inject a deliberate mapping bug: rounding, drop-pending, date-format, accrual
       --crash-in-cohort N  (rehearse, cutover, resume) die inside cohort N before it commits, to test recovery
@@ -19,7 +20,7 @@ string? Option(string name) { var i = Array.IndexOf(args, name); return i >= 0 &
 var command = args.FirstOrDefault();
 var fault = Option("--fault");
 int? crashInCohort = int.TryParse(Option("--crash-in-cohort"), out var n) ? n : null;
-if (command is not ("migrate" or "reconcile" or "rehearse" or "cutover" or "resume") || (fault != null && !Migration.Faults.Contains(fault)))
+if (command is not ("migrate" or "reconcile" or "rehearse" or "cutover" or "resume" or "dashboard") || (fault != null && !Migration.Faults.Contains(fault)))
 {
     Console.Error.WriteLine(Usage);
     return 2;
@@ -34,6 +35,10 @@ try
 
     switch (command)
     {
+        case "dashboard":
+            Dashboard.Run(int.TryParse(Option("--port"), out var port) ? port : 5080);
+            return 0;
+
         case "migrate":
             Migrate(db, new Migration(db, config, fault));
             return 0;

@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CoreShift rehearsals</title>
+<style>
+  :root { --bg: #f4f6f2; --card: #fff; --ink: #14223a; --muted: #5a6578; --rule: #d6dbd1; --ok: #1c7347; --ok-soft: #e0f1e6; --bad: #b42318; --bad-soft: #fbe6e2; --accent: #1b5a8d; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0d1320; --card: #141c2b; --ink: #e3e8f0; --muted: #97a3b7; --rule: #27324a; --ok: #5cc58d; --ok-soft: #12301f; --bad: #ff8a7e; --bad-soft: #3a1a17; --accent: #79b3e6; } }
+  * { box-sizing: border-box }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 60px; display: grid; gap: 20px }
+  h1 { margin: 0; font-size: 1.6rem } h2 { margin: 0 0 10px; font-size: 1.05rem }
+  .card { background: var(--card); border: 1px solid var(--rule); border-radius: 10px; padding: 16px; min-width: 0 }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px }
+  .kpis b { display: block; font: 600 1.6rem ui-monospace, Menlo, monospace }
+  .kpis span { color: var(--muted); font-size: .85rem }
+  .pill { display: inline-block; padding: 1px 9px; border-radius: 99px; font-weight: 600; font-size: .8rem }
+  .pass { background: var(--ok-soft); color: var(--ok) } .fail { background: var(--bad-soft); color: var(--bad) }
+  .trend { display: flex; align-items: flex-end; gap: 6px; height: 160px; border-bottom: 1px solid var(--rule) }
+  .trend div { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; height: 100%; min-width: 0 }
+  .trend i { display: block; width: 100%; max-width: 46px; border-radius: 4px 4px 0 0; background: var(--bad) }
+  .trend i.zero { background: var(--ok); height: 4px }
+  .trend small { font: .7rem ui-monospace, Menlo, monospace; color: var(--muted) }
+  .labels { display: flex; gap: 6px } .labels span { flex: 1; text-align: center; font-size: .7rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+  .scroll { overflow-x: auto }
+  table { border-collapse: collapse; width: 100%; font-size: .85rem }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--rule); white-space: nowrap }
+  th { color: var(--muted); font-weight: 500; font-size: .75rem; text-transform: uppercase; letter-spacing: .05em }
+  td.n { text-align: right; font-family: ui-monospace, Menlo, monospace }
+  tbody tr { cursor: pointer } tbody tr:hover, tbody tr.sel { background: color-mix(in srgb, var(--accent) 12%, transparent) }
+  .log td:first-child { font-family: ui-monospace, Menlo, monospace; color: var(--muted) }
+  .muted { color: var(--muted) }
+</style>
+</head>
+<body>
+<main>
+  <div><h1>CoreShift rehearsals</h1><div class="muted">Every rehearsal and cutover, reconciled against legacy. Synthetic data only.</div></div>
+  <div class="kpis card" id="kpis"></div>
+  <div class="card"><h2>Unexplained breaks per rehearsal</h2><div class="trend" id="trend"></div><div class="labels" id="labels"></div></div>
+  <div class="card"><h2>Rehearsals <span class="muted">(click one for its breaks)</span></h2><div class="scroll"><table id="runs"></table></div></div>
+  <div class="card"><h2 id="breaksTitle">Breaks</h2><div class="scroll"><table id="breaks"></table></div></div>
+  <div class="card"><h2 id="logTitle">Latest run</h2><div class="scroll"><table class="log" id="log"></table></div></div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const fmt = n => n == null ? '' : Number(n).toLocaleString('en-AU');
+const money = n => n == null ? '' : Number(n).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const label = r => `#${r.rehearsal_id} ${r.fault ?? 'clean'}`;
+
+async function load() {
+  const runs = await (await fetch('/api/rehearsals')).json();
+  if (!runs.length) { $('#kpis').innerHTML = '<span>No rehearsals yet. Run <code>coreshift rehearse</code>.</span>'; return; }
+  const last = runs.at(-1), passed = runs.filter(r => r.passed).length;
+  $('#kpis').innerHTML = `
+    <div><b><span class="pill ${last.passed ? 'pass' : 'fail'}">${last.passed ? 'PASS' : 'FAIL'}</span></b><span>latest: ${esc(label(last))}</span></div>
+    <div><b>${runs.length}</b><span>rehearsals run</span></div>
+    <div><b>${Math.round(100 * passed / runs.length)}%</b><span>pass rate</span></div>
+    <div><b>${fmt(last.unexplained)}</b><span>unexplained breaks, latest</span></div>
+    <div><b>${fmt(last.merged_customers)}</b><span>duplicate customers merged</span></div>`;
+  const max = Math.max(1, ...runs.map(r => r.unexplained));
+  $('#trend').innerHTML = runs.map(r => `<div title="${esc(label(r))}: ${fmt(r.unexplained)}"><small>${fmt(r.unexplained)}</small><i class="${r.unexplained ? '' : 'zero'}" style="${r.unexplained ? `height:${Math.max(3, 100 * r.unexplained / max)}%` : ''}"></i></div>`).join('');
+  $('#labels').innerHTML = runs.map(r => `<span>${esc(label(r))}</span>`).join('');
+  $('#runs').innerHTML = `<thead><tr><th>#</th><th>When (UTC)</th><th>Kind</th><th>Fault</th><th class="n">Accounts</th><th class="n">Transactions</th><th class="n">Balance gap</th><th class="n">Breaks</th><th class="n">Unexplained</th><th>Result</th></tr></thead><tbody>` +
+    runs.slice().reverse().map(r => `<tr data-id="${r.rehearsal_id}"><td>${r.rehearsal_id}</td><td>${esc(String(r.started_at).replace('T', ' ').slice(0, 16))}</td><td>${esc(r.kind.toLowerCase())}</td><td>${esc(r.fault ?? '')}</td>
+      <td class="n">${fmt(r.target_accounts)} / ${fmt(r.legacy_accounts)}</td><td class="n">${fmt(r.target_transactions)} / ${fmt(r.legacy_transactions)}</td>
+      <td class="n">${money(r.target_balance - r.legacy_balance)}</td><td class="n">${fmt(r.breaks)}</td><td class="n">${fmt(r.unexplained)}</td>
+      <td><span class="pill ${r.passed ? 'pass' : 'fail'}">${r.passed ? 'PASS' : 'FAIL'}</span></td></tr>`).join('') + '</tbody>';
+  document.querySelectorAll('#runs tbody tr').forEach(tr => tr.onclick = () => showBreaks(tr.dataset.id));
+  showBreaks(last.rehearsal_id);
+  const log = await (await fetch('/api/runs/latest')).json();
+  if (log.length) {
+    $('#logTitle').textContent = `Latest run: #${log[0].run_id}, ${log[0].kind.toLowerCase()}, ${log[0].state.toLowerCase()}${log[0].outcome ? ', ' + log[0].outcome.replace('_', '-').toLowerCase() : ''}`;
+    $('#log').innerHTML = log.map(l => `<tr><td>${esc(String(l.at).slice(11, 19))}</td><td><b>${esc(l.step)}</b></td><td>${esc(l.message)}</td></tr>`).join('');
+  }
+}
+
+async function showBreaks(id) {
+  document.querySelectorAll('#runs tbody tr').forEach(tr => tr.classList.toggle('sel', tr.dataset.id == id));
+  const rows = await (await fetch(`/api/rehearsals/${id}/breaks`)).json();
+  $('#breaksTitle').textContent = `Breaks in rehearsal ${id}`;
+  $('#breaks').innerHTML = rows.length
+    ? '<thead><tr><th class="n">Count</th><th>Reason</th><th></th><th>Example</th></tr></thead><tbody>' + rows.map(b => `<tr><td class="n">${fmt(b.breaks)}</td><td>${esc(b.reason)}</td>
+      <td><span class="pill ${b.explained ? 'pass' : 'fail'}">${b.explained ? 'explained' : 'unexplained'}</span></td><td>${esc(b.example)} <span class="muted">${esc(b.example_detail ?? '')}</span></td></tr>`).join('') + '</tbody>'
+    : '<tr><td>No breaks.</td></tr>';
+}
+load();
+</script>
+</body>
+</html>

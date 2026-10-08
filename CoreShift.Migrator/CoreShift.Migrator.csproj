@@ -10,12 +10,15 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.1.1" />
+    <!-- ASP.NET Core, for the dashboard -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
   <ItemGroup>
     <!-- SQL ships inside the tool so it runs the same from any folder -->
     <EmbeddedResource Include="..\db\05-target-schema.sql" LogicalName="target-schema.sql" />
     <EmbeddedResource Include="..\db\06-reconcile.sql" LogicalName="reconcile.sql" />
+    <EmbeddedResource Include="dashboard.html" LogicalName="dashboard.html" />
     <!-- The mapping rules stay a plain file next to the tool, editable without touching code -->
     <None Include="..\mapping\mapping.v1.json" Link="mapping.v1.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
