@@ -107,4 +107,23 @@ public class LegacyBank
         bank.Generate(300, () => summary.Add(bank.Customers, bank.Accounts, bank.Holders, bank.Transactions));
         Assert.True(summary.Passed);
     }
+
+    // A wrong merge is filed as an explained break, so the reconciliation can't catch it. Check the matcher
+    // on banks it wasn't tuned on: it must merge exactly the planted duplicates, no more and no fewer.
+    // In this class because the generator's randomness is global and tests in one class don't run in parallel.
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(5)]
+    public void The_matcher_merges_exactly_the_planted_duplicates(int seed)
+    {
+        Randomizer.Seed = new Random(seed);
+        var bank = new LegacyBankGenerator(new DateOnly(2026, 9, 16), historyMonths: 3);
+        var people = new List<Dedupe.Candidate>();
+        bank.Generate(2000, () => people.AddRange(bank.Customers.Select(c => new Dedupe.Candidate(c.CustId, c.FirstName, c.LastName,
+            Rules.LegacyDate(c.DateOfBirth)!.Value, c.Postcode, c.Suburb, Rules.LegacyDate(c.CustomerSince)!.Value, Rules.Mobile(c.Mobile), c.Email))));
+        Assert.Equal(bank.Duplicates.Order(), Dedupe.Find(people).Keys.Order());
+    }
 }

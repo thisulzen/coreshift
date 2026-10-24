@@ -15,14 +15,28 @@ class Cutover(SqlConnection db, MappingConfig config)
     {
         if (Unfinished() is int open)
             throw new InvalidOperationException($"Run {open} hasn't finished. Carry it on with `coreshift resume`.");
-        var id = (int)Db.Cmd(db, "INSERT INTO ops.cutover_runs (kind, state, mapping_version, fault) OUTPUT INSERTED.run_id VALUES (@kind, 'STARTED', @version, @fault)",
-            null, ("@kind", kind), ("@version", config.Version), ("@fault", fault)).ExecuteScalar()!;
+        EnsureTargetNotLive();
+        // The check above gives the message; the locks here make it hold when two runs start at the same moment
+        var id = Db.Cmd(db, """
+            INSERT INTO ops.cutover_runs (kind, state, mapping_version, fault) OUTPUT INSERTED.run_id
+            SELECT @kind, 'STARTED', @version, @fault
+            WHERE NOT EXISTS (SELECT 1 FROM ops.cutover_runs WITH (UPDLOCK, HOLDLOCK) WHERE state NOT IN ('COMMITTED', 'ROLLED_BACK'))
+            """, null, ("@kind", kind), ("@version", config.Version), ("@fault", fault)).ExecuteScalar() as int?
+            ?? throw new InvalidOperationException("Another run started at the same moment. Carry it on with `coreshift resume`.");
         Log(id, "START", $"{kind.ToLowerInvariant()} with mapping v{config.Version}{(fault != null ? $" and fault '{fault}'" : "")}");
         return id;
     }
 
     public int? Unfinished() =>
         Db.Cmd(db, "SELECT TOP 1 run_id FROM ops.cutover_runs WHERE state NOT IN ('COMMITTED', 'ROLLED_BACK') ORDER BY run_id DESC").ExecuteScalar() as int?;
+
+    // Once a cutover commits, the target is the live bank and legacy is retired. Every rehearsal and
+    // migrate starts by emptying the target, so none may run until a new legacy bank is loaded.
+    public void EnsureTargetNotLive()
+    {
+        if (Db.Cmd(db, "SELECT c.run_id FROM ops.freeze f JOIN ops.cutover_runs c ON c.run_id = f.frozen_by_run WHERE c.state = 'COMMITTED'").ExecuteScalar() is int live)
+            throw new InvalidOperationException($"Cutover {live} committed, so the target is the live bank. Load a new legacy bank with db/load-legacy.sh to rehearse again.");
+    }
 
     // Runs a cutover to the end from whatever state it's in. True means the outcome was GO.
     public bool Run(int runId, int? crashInCohort = null)
@@ -43,12 +57,9 @@ class Cutover(SqlConnection db, MappingConfig config)
                     Next(runId, "FROZEN", "legacy is frozen: its tables now refuse every write");
                     break;
                 case "FROZEN":
-                    Exec(runId, """
-                        UPDATE ops.cutover_runs SET legacy_fingerprint = (SELECT fingerprint FROM ops.legacy_fingerprint),
-                            legacy_accounts = (SELECT COUNT(*) FROM legacy.accounts), legacy_balance = (SELECT SUM(BALANCE) FROM legacy.accounts)
-                        WHERE run_id = @run
-                        """);
-                    Next(runId, "EXTRACTED", "legacy fingerprint and control totals recorded");
+                    Exec(runId, "UPDATE ops.cutover_runs SET legacy_fingerprint = (SELECT fingerprint FROM ops.legacy_fingerprint) WHERE run_id = @run");
+                    Log(runId, "SCAM WATCH", $"{Db.Cmd(db, "SELECT COUNT(*) FROM ops.scam_watch").ExecuteScalar()} accounts sent more than they kept to a new payee in the week before the freeze; for the fraud team (coreshift scam-watch)");
+                    Next(runId, "EXTRACTED", "legacy fingerprint recorded: row counts and highest rowversion per table");
                     break;
                 case "EXTRACTED":
                 {

@@ -1,8 +1,10 @@
--- The target bank and the migration's own bookkeeping. The migrator runs this on every start.
--- It only creates what's missing, so running it again changes nothing.
+-- The target bank and the migration's own bookkeeping. The migrator runs this on every start, as the
+-- coreshift login. It only creates what's missing, so running it again changes nothing. The schemas,
+-- the freeze and the login itself are the administrator's: db/03-access.sql.
 
-IF SCHEMA_ID('target') IS NULL EXEC('CREATE SCHEMA target');
-IF SCHEMA_ID('ops') IS NULL EXEC('CREATE SCHEMA ops');
+-- Two commands starting at once would create the same tables and views at the same time and one would fail.
+-- Held by this connection until the end of the script, or until it closes.
+EXEC sp_getapplock @Resource = 'coreshift-schema', @LockMode = 'Exclusive', @LockOwner = 'Session', @LockTimeout = 60000;
 GO
 
 -- The clean bank: real types, one row per real person, product codes from the new catalogue
@@ -134,9 +136,7 @@ CREATE TABLE ops.cutover_runs (
     mapping_version     VARCHAR(20)   NOT NULL,
     fault               VARCHAR(20)   NULL,
     customers_loaded    BIT           NOT NULL DEFAULT 0,
-    legacy_fingerprint  VARCHAR(60)   NULL,
-    legacy_accounts     INT           NULL,
-    legacy_balance      DECIMAL(18,2) NULL,
+    legacy_fingerprint  VARCHAR(100)  NULL,
     rehearsal_id        INT           NULL,
     started_at          DATETIME2(0)  NOT NULL DEFAULT SYSUTCDATETIME(),
     updated_at          DATETIME2(0)  NOT NULL DEFAULT SYSUTCDATETIME()
@@ -161,13 +161,6 @@ CREATE TABLE ops.cohorts (
     loaded_at      DATETIME2(3)  NULL,
     CONSTRAINT pk_cohorts PRIMARY KEY (run_id, cohort_no)
 );
-
--- While frozen_by_run is set, triggers on the legacy tables refuse every write
-IF OBJECT_ID('ops.freeze') IS NULL
-BEGIN
-    CREATE TABLE ops.freeze (frozen_by_run INT NULL);
-    INSERT INTO ops.freeze VALUES (NULL);
-END
 
 -- Reconciliation results: one row per rehearsal, one row per break
 IF OBJECT_ID('ops.rehearsals') IS NULL
@@ -209,29 +202,30 @@ BEGIN
 END
 GO
 
--- One value that changes when any legacy row changes. CHECKSUM can, very rarely, miss a change;
--- the per-account SHA-256 history hashes in the reconciliation are the strong check.
+-- Each legacy table's row count and highest rowversion. Any committed insert, update or delete changes
+-- it, even one that writes back the same value; a write the freeze refuses is rolled back and doesn't.
 CREATE OR ALTER VIEW ops.legacy_fingerprint AS
-SELECT CONCAT((SELECT CHECKSUM_AGG(BINARY_CHECKSUM(*)) FROM legacy.customers), '/',
-              (SELECT CHECKSUM_AGG(BINARY_CHECKSUM(*)) FROM legacy.accounts), '/',
-              (SELECT CHECKSUM_AGG(BINARY_CHECKSUM(*)) FROM legacy.account_holders), '/',
-              (SELECT CHECKSUM_AGG(BINARY_CHECKSUM(*)) FROM legacy.transactions)) AS fingerprint;
+SELECT CONCAT_WS('/', (SELECT CONCAT(COUNT(*), ':', CAST(MAX(ROW_VERSION) AS bigint)) FROM legacy.customers),
+                      (SELECT CONCAT(COUNT(*), ':', CAST(MAX(ROW_VERSION) AS bigint)) FROM legacy.accounts),
+                      (SELECT CONCAT(COUNT(*), ':', CAST(MAX(ROW_VERSION) AS bigint)) FROM legacy.account_holders),
+                      (SELECT CONCAT(COUNT(*), ':', CAST(MAX(ROW_VERSION) AS bigint)) FROM legacy.transactions)) AS fingerprint;
 GO
 
--- The freeze. db/load-legacy.sh recreates the legacy tables, which drops these, so they're
--- recreated here on every start.
-CREATE OR ALTER TRIGGER legacy.freeze_customers ON legacy.customers AFTER INSERT, UPDATE, DELETE AS
-    IF EXISTS (SELECT 1 FROM ops.freeze WHERE frozen_by_run IS NOT NULL)
-        THROW 50100, 'Legacy is frozen for a cutover. Writes are blocked until it commits or rolls back.', 1;
+-- Scam watch, for the fraud team at cutover, when scammers call: "your bank is moving, keep your money safe
+-- in this account". Accounts that, in the week up to the extract, sent at least $2,000 to people they had
+-- never paid before, and sent more than they kept. It reads legacy only and never affects go/no-go.
+CREATE OR ALTER VIEW ops.scam_watch AS
+WITH paid AS (
+    SELECT ACCT_NO, CONVERT(date, TXN_DATE, 103) AS paid_on, -AMOUNT AS amount, REPLACE(DESCRIPTION, 'NPP PAYMENT TO ', '') AS payee
+    FROM legacy.transactions WHERE TXN_CODE = 'NPP' AND AMOUNT < 0),
+week AS (SELECT DATEADD(day, -6, MAX(CONVERT(date, TXN_DATE, 103))) AS starts FROM legacy.transactions),
+to_new_payees AS (
+    SELECT p.* FROM paid p CROSS JOIN week w
+    WHERE p.paid_on >= w.starts AND NOT EXISTS (SELECT 1 FROM paid e WHERE e.ACCT_NO = p.ACCT_NO AND e.payee = p.payee AND e.paid_on < w.starts))
+SELECT n.ACCT_NO AS account_number, SUM(n.amount) AS sent, a.BALANCE AS balance_left, MAX(n.paid_on) AS last_paid,
+       STRING_AGG(n.payee, ', ') AS payees
+FROM to_new_payees n JOIN legacy.accounts a ON a.ACCT_NO = n.ACCT_NO
+GROUP BY n.ACCT_NO, a.BALANCE
+HAVING SUM(n.amount) >= 2000 AND SUM(n.amount) > a.BALANCE;
 GO
-CREATE OR ALTER TRIGGER legacy.freeze_accounts ON legacy.accounts AFTER INSERT, UPDATE, DELETE AS
-    IF EXISTS (SELECT 1 FROM ops.freeze WHERE frozen_by_run IS NOT NULL)
-        THROW 50100, 'Legacy is frozen for a cutover. Writes are blocked until it commits or rolls back.', 1;
-GO
-CREATE OR ALTER TRIGGER legacy.freeze_account_holders ON legacy.account_holders AFTER INSERT, UPDATE, DELETE AS
-    IF EXISTS (SELECT 1 FROM ops.freeze WHERE frozen_by_run IS NOT NULL)
-        THROW 50100, 'Legacy is frozen for a cutover. Writes are blocked until it commits or rolls back.', 1;
-GO
-CREATE OR ALTER TRIGGER legacy.freeze_transactions ON legacy.transactions AFTER INSERT, UPDATE, DELETE AS
-    IF EXISTS (SELECT 1 FROM ops.freeze WHERE frozen_by_run IS NOT NULL)
-        THROW 50100, 'Legacy is frozen for a cutover. Writes are blocked until it commits or rolls back.', 1;
+EXEC sp_releaseapplock @Resource = 'coreshift-schema', @LockOwner = 'Session';

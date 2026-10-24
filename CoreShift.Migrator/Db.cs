@@ -6,13 +6,18 @@ namespace CoreShift.Migrator;
 
 static class Db
 {
-    // The SA password comes from the environment, or from the .env file db/load-legacy.sh writes
+    // The tool logs in as coreshift, which can read legacy but not change it (db/03-access.sql). The password
+    // comes from the environment, or from the .env file db/load-legacy.sh writes when it creates the login.
     public static SqlConnection Open()
     {
-        var password = Environment.GetEnvironmentVariable("MSSQL_SA_PASSWORD") ?? FromDotEnv("MSSQL_SA_PASSWORD")
-            ?? throw new InvalidOperationException("No MSSQL_SA_PASSWORD found. Run db/load-legacy.sh first; it creates .env.");
-        var db = new SqlConnection($"Server=localhost,1433;Database=CoreShift;User Id=sa;Password={password};TrustServerCertificate=True");
-        db.Open();
+        var password = Environment.GetEnvironmentVariable("CORESHIFT_PASSWORD") ?? FromDotEnv("CORESHIFT_PASSWORD")
+            ?? throw new InvalidOperationException("No CORESHIFT_PASSWORD found. Run db/load-legacy.sh first; it creates the login and .env.");
+        var db = new SqlConnection($"Server=localhost,1433;Database=CoreShift;User Id=coreshift;Password={password};TrustServerCertificate=True");
+        try { db.Open(); }
+        catch (SqlException e)
+        {
+            throw new InvalidOperationException($"Can't connect to SQL Server on localhost:1433 (if it isn't running: `docker compose up -d`). {e.Message}", e);
+        }
         return db;
     }
 
@@ -30,7 +35,13 @@ static class Db
     public static SqlCommand Cmd(SqlConnection db, string sql, SqlTransaction? tx = null, params (string Name, object? Value)[] args)
     {
         var cmd = new SqlCommand(sql, db, tx) { CommandTimeout = 900 };
-        foreach (var (name, value) in args) cmd.Parameters.AddWithValue(name, value ?? DBNull.Value);
+        foreach (var (name, value) in args)
+        {
+            // Every text column here is VARCHAR or CHAR. Sent as NVARCHAR, AddWithValue's default for strings,
+            // SQL Server converts the column instead, can't seek its index, and every cohort scanned whole tables.
+            var p = cmd.Parameters.AddWithValue(name, value ?? DBNull.Value);
+            if (value is string) p.SqlDbType = SqlDbType.VarChar;
+        }
         return cmd;
     }
 

@@ -3,7 +3,8 @@ name: coreshift
 
 services:
   sql:
-    image: mcr.microsoft.com/mssql/server:2022-latest
+    # Pinned, so CI and every laptop run the build the rehearsals were proven on; bump it deliberately
+    image: mcr.microsoft.com/mssql/server:2022-CU27-ubuntu-22.04
     environment:
       ACCEPT_EULA: "Y"
       MSSQL_PID: Developer                  # free, full-featured, licensed for dev/test only

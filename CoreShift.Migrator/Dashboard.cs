@@ -29,6 +29,7 @@ static class Dashboard
             FROM ops.cutover_log l JOIN ops.cutover_runs c ON c.run_id = l.run_id
             WHERE l.run_id = (SELECT MAX(run_id) FROM ops.cutover_runs) ORDER BY l.log_id
             """));
+        app.MapGet("/api/scam-watch", () => Query("SELECT account_number, sent, balance_left, last_paid, payees FROM ops.scam_watch ORDER BY sent DESC"));
         Console.WriteLine($"Dashboard on http://localhost:{port} (Ctrl+C to stop)");
         app.Run($"http://localhost:{port}");
     }

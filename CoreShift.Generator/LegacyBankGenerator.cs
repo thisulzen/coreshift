@@ -122,7 +122,8 @@ public class LegacyBankGenerator
     public List<LegacyAccount> Accounts { get; } = [];
     public List<LegacyAccountHolder> Holders { get; } = [];
     public List<LegacyTransaction> Transactions { get; } = [];
-    public int DuplicatesSeeded { get; private set; }
+    public List<string> Duplicates { get; } = [];   // ids of the second records, so tests can check the matcher exactly
+    public List<string> ScamVictims { get; } = [];  // accounts emptied by a scam, so the scam watch can be checked exactly
 
     public LegacyBankGenerator(DateOnly extractDate, int historyMonths)
     {
@@ -694,6 +695,7 @@ public class LegacyBankGenerator
                 CardCycle(h, d);
                 Spending(h, d);
                 Sweep(h, d);
+                if (d == extractDate) MaybeScam(h, d);
             }
             EndOfDay(h, d);
         }
@@ -839,6 +841,21 @@ public class LegacyBankGenerator
         Transfer(s, h.Main, d, Math.Min(s.Row.Balance, Math.Ceiling((-h.Main.Row.Balance + 300) / 100) * 100));
     }
 
+    // A scam call on the day of the extract: "your bank is moving, keep your money safe in this account".
+    // The customer moves their savings across, then sends most of it to someone they've never paid.
+    // It has its own randomness, seeded by the household and used last, so planting scams changes
+    // nothing else in the bank.
+    void MaybeScam(Household h, DateOnly d)
+    {
+        var rng = new Random(int.Parse(h.People[0].Row.CustId[1..]));
+        var savings = h.Savings is { } s && IsOpen(s, d) ? Math.Max(0, s.Row.Balance) : 0;
+        if (rng.NextDouble() >= 0.01 || Available(h.Main!) + savings < 3_000) return;
+        if (savings > 0) Transfer(h.Savings!, h.Main!, d, savings);
+        var payee = new Faker("en_AU") { Random = new Randomizer(rng.Next()) }.Name.FullName().ToUpperInvariant();
+        Post(h.Main!, d, "NPP", $"NPP PAYMENT TO {payee}", -Math.Floor(Available(h.Main!) * (decimal)(0.85 + 0.13 * rng.NextDouble())), "NPP", customer: true);
+        ScamVictims.Add(h.Main!.Row.AcctNo);
+    }
+
     void EndOfDay(Household h, DateOnly d)
     {
         var monthEnd = d.AddDays(1).Day == 1;
@@ -981,7 +998,7 @@ public class LegacyBankGenerator
         };
         Customers.Add(dup);
         Holders.First(x => x.AcctNo == moved.Row.AcctNo).CustId = dup.CustId;
-        DuplicatesSeeded++;
+        Duplicates.Add(dup.CustId);
     }
 
     DateOnly NextDue(Acct a)

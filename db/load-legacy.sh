@@ -7,8 +7,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 extract=CoreShift.Generator/output/legacy
 
-# The SA password lives in .env, which git ignores. The first run makes a random one.
+# Passwords live in .env, which git ignores: SA for this script, CORESHIFT for the tool's own login.
+# Each is made at random the first time it's missing.
 [ -f .env ] || echo "MSSQL_SA_PASSWORD=Cs1$(openssl rand -hex 12)" > .env
+grep -q '^CORESHIFT_PASSWORD=' .env || echo "CORESHIFT_PASSWORD=Cs1$(openssl rand -hex 12)" >> .env
+CORESHIFT_PASSWORD=$(sed -n 's/^CORESHIFT_PASSWORD=//p' .env)
 
 if [ $# -gt 0 ] || [ ! -f "$extract/control_totals.csv" ]; then
     echo "==> Generating legacy bank data"
@@ -32,7 +35,7 @@ echo "==> Checking CSV columns match the tables"
 for table in customers accounts account_holders transactions; do
     csv=$(head -1 "$extract/$table.csv")
     db=$(sql -h -1 -y 8000 -Q "SET NOCOUNT ON; SELECT STRING_AGG(COLUMN_NAME, ',') WITHIN GROUP (ORDER BY ORDINAL_POSITION)
-        FROM CoreShift.INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'legacy' AND TABLE_NAME = '$table'" | tr -d '[:space:]')
+        FROM CoreShift.INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'legacy' AND TABLE_NAME = '${table}_extract'" | tr -d '[:space:]')
     if [ "$csv" != "$db" ]; then
         printf 'Column mismatch in %s\n  csv:   %s\n  table: %s\n' "$table" "$csv" "$db"
         exit 1
@@ -59,3 +62,6 @@ echo "$actual" | sed 's/^/    /'
 
 echo "==> Running integrity checks"
 sql -i /coreshift/db/04-legacy-checks.sql
+
+echo "==> Setting the freeze and the coreshift login (read-only on legacy)"
+sql -v pw="$CORESHIFT_PASSWORD" -i /coreshift/db/03-access.sql

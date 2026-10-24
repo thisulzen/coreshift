@@ -1,6 +1,9 @@
 # The same pipeline as azure-pipelines.yml, run on GitHub so every push gets checked
 name: CI
 on: [push, pull_request]
+# The job only reads the code, so its token can't write to the repo
+permissions:
+  contents: read
 
 jobs:
   rehearsal:

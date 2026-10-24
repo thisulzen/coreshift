@@ -10,6 +10,8 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.1.1" />
+    <!-- SqlClient 7.1.1 pulls in Pkcs 9.0.18, which has a high-severity advisory (GHSA-846f-f764-76mx). Drop this once SqlClient ships a fixed one. -->
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
     <!-- ASP.NET Core, for the dashboard -->
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>

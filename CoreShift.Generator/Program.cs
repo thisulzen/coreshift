@@ -39,6 +39,8 @@ using (var transactions = new CsvFile<LegacyTransaction>(Path.Combine(outDir, "t
     });
 }
 File.WriteAllLines(Path.Combine(outDir, "control_totals.csv"), summary.ControlTotals());
+// Not part of the extract: the answer key CI checks the scam watch against
+File.WriteAllLines(Path.Combine(outDir, "planted_scams.txt"), bank.ScamVictims);
 
-summary.Print(extractDate, seed, bank.DuplicatesSeeded, outDir);
+summary.Print(extractDate, seed, bank.Duplicates.Count, bank.ScamVictims.Count, outDir);
 return summary.Passed ? 0 : 1;

@@ -9,13 +9,15 @@ namespace CoreShift.Migrator;
 class Migration(SqlConnection db, MappingConfig config, string? fault)
 {
     // Deliberate mapping bugs, so the reconciliation can be shown catching each one
-    public static readonly string[] Faults = ["rounding", "drop-pending", "date-format", "accrual"];
+    public static readonly string[] Faults = ["rounding", "drop-pending", "date-format", "accrual", "joint-holders", "flags"];
 
     public void ClearTarget(SqlTransaction tx)
     {
-        // ponytail: DELETE because TRUNCATE refuses tables that foreign keys point at; drop and re-add the keys if this gets slow
-        foreach (var table in new[] { "transactions", "account_holders", "accounts", "customers" })
-            Db.Cmd(db, $"DELETE FROM target.{table}", tx).ExecuteNonQuery();
+        // Nothing points at transactions or holders, so they're truncated: near-instant and barely logged, still
+        // inside the transaction. Deleting 11.6 million transactions took over 4 minutes at 100,000 customers.
+        // TRUNCATE refuses accounts and customers, which foreign keys point at, but they're small.
+        foreach (var sql in new[] { "TRUNCATE TABLE target.transactions", "TRUNCATE TABLE target.account_holders", "DELETE FROM target.accounts", "DELETE FROM target.customers" })
+            Db.Cmd(db, sql, tx).ExecuteNonQuery();
         Db.Cmd(db, "DELETE FROM ops.target_load; INSERT INTO ops.target_load VALUES (@version, @fault)", tx, ("@version", config.Version), ("@fault", fault)).ExecuteNonQuery();
     }
 
@@ -46,6 +48,7 @@ class Migration(SqlConnection db, MappingConfig config, string? fault)
             {
                 var row = customers.NewRow();
                 config.Fill(row, r, "customers", fault);
+                if (fault == "flags") row["is_pep"] = row["is_vulnerable"] = false;
                 customers.Rows.Add(row);
             }
         using (var r = Db.Cmd(db, "SELECT m.customer_id, c.MOBILE, c.EMAIL FROM legacy.customers c JOIN ops.customer_map m ON m.legacy_cust_id = c.CUST_ID WHERE m.customer_id <> c.CUST_ID", tx).ExecuteReader())
@@ -78,12 +81,13 @@ class Migration(SqlConnection db, MappingConfig config, string? fault)
         // The account name is rebuilt from the holders, because the legacy field cut it off at 30 characters.
         var holders = Db.Shape(db, "target.account_holders", tx);
         var names = new Dictionary<string, string>();
-        using (var r = Db.Cmd(db, """
+        var primaryOnly = fault == "joint-holders" ? " AND h.ROLE = 'PRIMARY'" : "";
+        using (var r = Db.Cmd(db, $"""
             SELECT h.ACCT_NO, m.customer_id AS CUST_ID, h.ROLE, UPPER(CONCAT(c.first_name, ' ', c.last_name)) AS NAME
             FROM legacy.account_holders h
             JOIN ops.customer_map m ON m.legacy_cust_id = h.CUST_ID
             JOIN target.customers c ON c.customer_id = m.customer_id
-            WHERE h.ACCT_NO BETWEEN @first AND @last
+            WHERE h.ACCT_NO BETWEEN @first AND @last{primaryOnly}
             ORDER BY h.ACCT_NO, CASE h.ROLE WHEN 'PRIMARY' THEN 0 ELSE 1 END
             """, tx, range).ExecuteReader())
             while (r.Read())

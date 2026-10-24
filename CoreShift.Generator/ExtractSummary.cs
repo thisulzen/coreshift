@@ -75,7 +75,7 @@ public class ExtractSummary
         $"transactions,{transactions},{transactionTotal:0.00}",
     ];
 
-    public void Print(DateOnly extractDate, int seed, int duplicates, string outDir)
+    public void Print(DateOnly extractDate, int seed, int duplicates, int scams, string outDir)
     {
         Console.WriteLine($"Legacy core extract as at {extractDate:dd/MM/yyyy} (seed {seed}), synthetic data only");
         Console.WriteLine($"  {customers:N0} customers, {accounts:N0} accounts, {transactions:N0} transactions");
@@ -99,6 +99,7 @@ public class ExtractSummary
         Console.WriteLine($"    {arrears} loans/cards in arrears, {hardship} in hardship");
         Console.WriteLine($"    {pending} pending card transactions, {accrued:N2} net accrued interest unposted");
         Console.WriteLine($"    {preAml} pre-AML customers never re-identified");
+        Console.WriteLine($"    {scams} accounts emptied by a scam call on the extract day");
         Console.WriteLine();
         Console.WriteLine($"  Files: {outDir}");
     }

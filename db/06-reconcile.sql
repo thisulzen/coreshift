@@ -44,7 +44,8 @@ SELECT @rehearsal_id, 'accrued interest', l.ACCT_NO, CONVERT(varchar(30), l.ACCR
 FROM #la l JOIN target.accounts t ON t.account_number = l.ACCT_NO WHERE t.accrued_interest <> l.ACCRUED_INTEREST
 UNION ALL
 SELECT @rehearsal_id, 'open date', l.ACCT_NO, CONVERT(char(10), l.opened_on, 23), CONVERT(char(10), t.opened_on, 23),
-       CASE WHEN DAY(l.opened_on) <= 12 AND t.opened_on = DATEFROMPARTS(YEAR(l.opened_on), DAY(l.opened_on), MONTH(l.opened_on))
+       -- Compared part by part: building the swapped date can fail, because SQL Server may evaluate it before any DAY() <= 12 guard
+       CASE WHEN YEAR(t.opened_on) = YEAR(l.opened_on) AND MONTH(t.opened_on) = DAY(l.opened_on) AND DAY(t.opened_on) = MONTH(l.opened_on)
             THEN 'Date read month-first (MM/dd instead of dd/MM)' ELSE 'Open date differs' END, NULL, 0
 FROM #la l JOIN target.accounts t ON t.account_number = l.ACCT_NO WHERE t.opened_on <> l.opened_on
 UNION ALL
@@ -60,6 +61,48 @@ UNION ALL
 SELECT @rehearsal_id, 'history hash', lh.ACCT_NO, CONVERT(varchar(64), lh.history, 2), CONVERT(varchar(64), th.history, 2),
        'Transaction history altered', 'Same number of transactions, different content', 0
 FROM #lh lh JOIN #th th ON th.account_number = lh.ACCT_NO WHERE lh.txns = th.txns AND lh.history <> th.history
+UNION ALL
+-- Status through the reconciliation's own lookup, not the mapping file's: a closed account must not come back open
+SELECT @rehearsal_id, 'status', l.ACCT_NO, l.STATUS, t.status, 'Account status differs', NULL, 0
+FROM legacy.accounts l JOIN target.accounts t ON t.account_number = l.ACCT_NO
+WHERE t.status IS DISTINCT FROM CASE l.STATUS WHEN 'OPEN' THEN 'Active' WHEN 'CLOSED' THEN 'Closed' WHEN 'DORMANT' THEN 'Dormant' WHEN 'FROZEN' THEN 'Frozen' END
+UNION ALL
+-- The terms each customer is held to
+SELECT @rehearsal_id, 'account terms', l.ACCT_NO, NULL, NULL, 'Account terms differ', d.fields, 0
+FROM legacy.accounts l JOIN target.accounts t ON t.account_number = l.ACCT_NO
+CROSS APPLY (SELECT CONCAT_WS(', ',
+    CASE WHEN t.interest_rate <> l.INTEREST_RATE THEN 'interest rate' END,
+    CASE WHEN t.overdraft_limit <> l.OVERDRAFT_LIMIT THEN 'overdraft limit' END,
+    CASE WHEN t.credit_limit IS DISTINCT FROM l.CREDIT_LIMIT THEN 'credit limit' END,
+    CASE WHEN t.available_balance <> l.AVAILABLE_BALANCE THEN 'available balance' END,
+    CASE WHEN t.repayment_amount IS DISTINCT FROM l.REPAYMENT_AMOUNT THEN 'repayment' END,
+    CASE WHEN t.in_hardship <> IIF(l.HARDSHIP = 'Y', 1, 0) THEN 'hardship' END) AS fields) d
+WHERE d.fields <> ''
+UNION ALL
+-- Who owns each account: every legacy holder, through the customer map, with the same role
+SELECT @rehearsal_id, 'account holder', COALESCE(e.ACCT_NO, t.account_number), CONCAT(e.customer_id, ' ', e.role), CONCAT(t.customer_id, ' ', t.role),
+       CASE WHEN t.account_number IS NULL THEN CONCAT(e.role, ' holder not migrated')
+            WHEN e.ACCT_NO IS NULL THEN 'Holder has no legacy source' ELSE 'Holder role differs' END, NULL, 0
+FROM (SELECT h.ACCT_NO, m.customer_id, CASE h.ROLE WHEN 'PRIMARY' THEN 'Primary' WHEN 'JOINT' THEN 'Joint' END AS role
+      FROM legacy.account_holders h JOIN ops.customer_map m ON m.legacy_cust_id = h.CUST_ID) e
+FULL JOIN target.account_holders t ON t.account_number = e.ACCT_NO AND t.customer_id = e.customer_id
+WHERE t.account_number IS NULL OR e.ACCT_NO IS NULL OR t.role IS DISTINCT FROM e.role
+UNION ALL
+-- Compliance flags must survive, merges included: if any legacy record of a person says PEP, vulnerable,
+-- deceased or bankrupt, so must the target customer, and their AML risk rating can't drop
+SELECT @rehearsal_id, 'compliance flags', l.CUST_ID, NULL, m.customer_id, 'Compliance flag lost', d.lost, 0
+FROM legacy.customers l
+JOIN ops.customer_map m ON m.legacy_cust_id = l.CUST_ID
+JOIN target.customers t ON t.customer_id = m.customer_id
+CROSS APPLY (SELECT CONCAT_WS(', ',
+    CASE WHEN l.PEP = 'Y' AND t.is_pep = 0 THEN 'PEP' END,
+    CASE WHEN l.VULNERABLE = 'Y' AND t.is_vulnerable = 0 THEN 'vulnerable' END,
+    CASE WHEN l.DECEASED = 'Y' AND t.is_deceased = 0 THEN 'deceased' END,
+    CASE WHEN l.BANKRUPT = 'Y' AND t.is_bankrupt = 0 THEN 'bankrupt' END,
+    CASE WHEN CASE l.AML_RISK_RATING WHEN 'LOW' THEN 1 WHEN 'MEDIUM' THEN 2 ELSE 3 END
+            > CASE t.aml_risk_rating WHEN 'LOW' THEN 1 WHEN 'MEDIUM' THEN 2 ELSE 3 END
+         THEN CONCAT('AML risk ', l.AML_RISK_RATING, ' to ', t.aml_risk_rating) END) AS lost) d
+WHERE d.lost <> ''
 UNION ALL
 -- Duplicate customers merged on purpose: expected, and each one carries its evidence
 SELECT @rehearsal_id, 'customer merge', m.legacy_cust_id, m.legacy_cust_id, m.customer_id, 'Duplicate customer merged', m.match_reason, 1

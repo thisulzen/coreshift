@@ -12,6 +12,8 @@ ALTER DATABASE CoreShift SET RECOVERY SIMPLE;
 GO
 USE CoreShift;
 GO
+-- Without this, an unclean SQL Server restart skips 1,000 ids and run #6 is followed by run #1006
+ALTER DATABASE SCOPED CONFIGURATION SET IDENTITY_CACHE = OFF;
 IF SCHEMA_ID('legacy') IS NULL EXEC('CREATE SCHEMA legacy');
 GO
 
@@ -55,7 +57,8 @@ CREATE TABLE legacy.customers (
     BANKRUPT            CHAR(1)        NOT NULL,
     VULNERABLE          CHAR(1)        NOT NULL,
     DECEASED            CHAR(1)        NOT NULL,
-    MARKETING_CONSENT   CHAR(1)        NOT NULL
+    MARKETING_CONSENT   CHAR(1)        NOT NULL,
+    ROW_VERSION         ROWVERSION     -- not in the extract: the freeze fingerprint, see the end of this file
 );
 
 CREATE TABLE legacy.accounts (
@@ -93,7 +96,8 @@ CREATE TABLE legacy.accounts (
     ORIGINAL_LVR          DECIMAL(5,2)   NULL,
     FIXED_RATE_EXPIRY     VARCHAR(10)    NULL,
     LINKED_ACCT_NO        VARCHAR(12)    NULL,
-    LAST_ACTIVITY_DATE    VARCHAR(10)    NULL
+    LAST_ACTIVITY_DATE    VARCHAR(10)    NULL,
+    ROW_VERSION           ROWVERSION
 );
 
 -- Many-to-many: a joint account has two holders, a customer has several accounts
@@ -101,6 +105,7 @@ CREATE TABLE legacy.account_holders (
     ACCT_NO  VARCHAR(12)  NOT NULL CONSTRAINT fk_holders_account REFERENCES legacy.accounts (ACCT_NO),
     CUST_ID  VARCHAR(10)  NOT NULL CONSTRAINT fk_holders_customer REFERENCES legacy.customers (CUST_ID),
     ROLE     VARCHAR(7)   NOT NULL,
+    ROW_VERSION ROWVERSION,
     CONSTRAINT pk_account_holders PRIMARY KEY (ACCT_NO, CUST_ID)
 );
 CREATE INDEX ix_holders_customer ON legacy.account_holders (CUST_ID);
@@ -115,6 +120,23 @@ CREATE TABLE legacy.transactions (
     AMOUNT           DECIMAL(15,2)  NOT NULL,
     RUNNING_BALANCE  DECIMAL(15,2)  NULL,
     STATUS           VARCHAR(7)     NOT NULL,
-    CHANNEL          VARCHAR(13)    NOT NULL
+    CHANNEL          VARCHAR(13)    NOT NULL,
+    ROW_VERSION      ROWVERSION
 );
 CREATE INDEX ix_transactions_account ON legacy.transactions (ACCT_NO);
+GO
+
+-- Every insert or update stamps a row with a new, ever-higher ROW_VERSION, so a table's row count and
+-- highest stamp change whenever anything in it does: the freeze fingerprint. The extract has no such
+-- column and BULK INSERT maps fields by position, so each table loads through a view of its other
+-- columns, built here from the table itself, and rows are stamped as they go in. Adding the column
+-- after the load instead rewrote every row: 43 s and 4 GB of log at 100,000 customers.
+DECLARE @table sysname = '', @columns nvarchar(4000);
+WHILE 1 = 1
+BEGIN
+    SELECT TOP 1 @table = name FROM sys.tables WHERE schema_id = SCHEMA_ID('legacy') AND name > @table ORDER BY name;
+    IF @@ROWCOUNT = 0 BREAK;
+    SELECT @columns = STRING_AGG(QUOTENAME(name), ', ') WITHIN GROUP (ORDER BY column_id)
+    FROM sys.columns WHERE object_id = OBJECT_ID('legacy.' + @table) AND name <> 'ROW_VERSION';
+    EXEC('CREATE OR ALTER VIEW legacy.' + @table + '_extract AS SELECT ' + @columns + ' FROM legacy.' + @table);
+END
