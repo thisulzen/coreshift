@@ -67,6 +67,7 @@ Every change since the stage 7 commit, grouped by kind, with what proved it work
 - **Removed a known high-severity vulnerability.** Microsoft.Data.SqlClient 7.1.1 (the newest) pulls in System.Security.Cryptography.Pkcs 9.0.18 (GHSA-846f-f764-76mx). Pinned Pkcs 10.0.13. `CoreShift.Migrator/CoreShift.Migrator.csproj`. *Proved:* `dotnet list package --vulnerable --include-transitive` reports none.
 - **SQL Server is pinned to 2022 CU27**, the build every rehearsal here ran on. `2022-latest` had already moved to a different image, so CI would have tested against a server nobody had run. `docker-compose.yml`.
 - **The GitHub Actions token is read-only.** The workflow only reads the code. `.github/workflows/ci.yml`.
+- **CI warnings cleared.** GitHub flagged `actions/checkout@v4` and `actions/setup-dotnet@v4` for running on the deprecated Node.js 20, and `ubuntu-latest` for moving to Ubuntu 26. Updated to `checkout@v7` and `setup-dotnet@v6` (Node.js 24, nothing in their release notes affects this workflow), and pinned the runner to `ubuntu-24.04`, the image CI last passed on, in both pipelines. `.github/workflows/ci.yml`, `azure-pipelines.yml`.
 - **The build now fails on any high or critical package advisory**, direct or transitive, instead of printing a warning nobody reads. `Directory.Build.props`. *Proved:* with the pin removed the build stops with `error NU1903`.
 
 ### Tests

@@ -5,7 +5,7 @@ trigger:
     include: [main]
 
 pool:
-  vmImage: ubuntu-latest
+  vmImage: ubuntu-24.04   # pinned, the same as the GitHub workflow
 
 steps:
   - task: UseDotNet@2

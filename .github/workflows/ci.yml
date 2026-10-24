@@ -7,10 +7,11 @@ permissions:
 
 jobs:
   rehearsal:
-    runs-on: ubuntu-latest
+    # Pinned like SQL Server: ubuntu-latest moves to Ubuntu 26 under you; bump it deliberately
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
       - name: Unit tests
